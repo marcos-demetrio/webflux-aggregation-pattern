@@ -3,6 +3,7 @@ package com.example.aggregation.postaggregator;
 import static org.springframework.util.ObjectUtils.nullSafeEquals;
 
 import com.example.aggregation.comment.Comment;
+import com.example.aggregation.comment.CommentCache;
 import com.example.aggregation.comment.CommentClient;
 import com.example.aggregation.post.Post;
 import com.example.aggregation.post.PostClient;
@@ -10,6 +11,7 @@ import java.util.List;
 import java.util.stream.Collectors;
 import lombok.AllArgsConstructor;
 import org.springframework.stereotype.Service;
+import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.util.function.Tuples;
 
@@ -18,6 +20,7 @@ import reactor.util.function.Tuples;
 public class PostAggregateService {
   private final PostClient postClient;
   private final CommentClient commentClient;
+  private final CommentCache commentCache;
 
   public Mono<PostAggregate> findPostsApproach1() {
     return Mono.zip(
@@ -35,14 +38,13 @@ public class PostAggregateService {
         .map(this::combine);
   }
 
-  // In this approach the process is slow
+  // In this approach the process is slow due to many requests, so we use cache
   public Mono<PostAggregate> findPostsApproach2() {
     return postClient
         .retrieveAllPosts()
         .flatMap(
             post ->
-                commentClient
-                    .retrieveCommentsByPostId(post.getId())
+                getCommentsByPostId(post.getId())
                     .collectList()
                     .map(comments -> Tuples.of(post, comments)))
         .map(
@@ -56,6 +58,16 @@ public class PostAggregateService {
             })
         .collectList()
         .map(this::combine);
+  }
+
+  private Flux<Comment> getCommentsByPostId(final int postId) {
+    var commentFlux =
+        commentClient
+            .retrieveCommentsByPostId(postId)
+            .collectList()
+            .flatMapMany(comments -> commentCache.insert(postId, comments));
+
+    return commentCache.get(postId).switchIfEmpty(commentFlux);
   }
 
   private List<Comment> filterPostComments(List<Comment> comments, int postId) {
